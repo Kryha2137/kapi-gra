@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KAPI — Retro Platformówka</title>
+<style>
+:root{--ink:#152238;--panel:#fff5cf;--gold:#ffd447}
+*{box-sizing:border-box}body{margin:0;background:#18253c;color:#fff;font-family:system-ui,Segoe UI,sans-serif;display:flex;justify-content:center;padding:18px}
+main{width:min(100%,1000px)}h1{margin:0;text-align:center;letter-spacing:5px;font-size:clamp(2rem,6vw,4rem);color:#ffdf5d;text-shadow:4px 4px #a94435}
+.sub{text-align:center;margin:0 0 14px;color:#d7e5ff}.frame{border:5px solid #f8d66d;box-shadow:0 8px 0 #8d552d;background:#78cfff;border-radius:8px;overflow:hidden}
+canvas{display:block;width:100%;height:auto;image-rendering:pixelated;touch-action:manipulation}
+.hud{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 4px;font-weight:800}
+.help{text-align:center;color:#d7e5ff;font-size:.93rem;margin:4px 0 14px}
+.overlay{position:absolute;inset:0;background:#14213de8;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px}
+.gamebox{position:relative}.menuCard{background:#fff5cf;color:#17243a;border:5px solid #f6c843;box-shadow:7px 7px #713f2a;padding:22px;max-width:440px;width:90%}
+.menuCard h2{font-size:2.3rem;margin:0 0 8px;color:#d44c32;text-shadow:2px 2px #ffca49}.menuCard p{margin:8px 0 16px}
+button{font:inherit;font-weight:900;cursor:pointer;border:3px solid #18253c;background:#ffdc56;color:#18253c;padding:10px 18px;box-shadow:3px 3px #8c4d2d;margin:4px}button:hover{transform:translateY(-1px)}button:focus-visible{outline:3px solid #1676dd;outline-offset:3px}
+#message{min-height:1.4em;text-align:center;color:#ffe68b;font-weight:700}
+</style>
+</head>
+<body><main>
+<h1>KAPI</h1><p class="sub">RETRO PLATFORMÓWKA • 8-BITOWA PRZYGODA</p>
+<div class="frame gamebox">
+<canvas id="game" width="960" height="540" aria-label="Gra KAPI"></canvas>
+<div class="overlay" id="overlay"><div class="menuCard">
+<h2>KAPI</h2><p>Wskocz do przygody! Zbieraj złote monety, unikaj żółwi i odkrywaj kolejne światy.</p>
+<button id="play">▶ GRAJ</button><button id="continue" hidden>▶ KONTYNUUJ</button><button id="resetSave">NOWA GRA</button><button id="soundToggle">🔊 DŹWIĘK: ON</button>
+<p style="font-size:.85rem">Sterowanie: ← → lub A/D • skok: SPACJA / ↑ / W</p></div></div>
+</div>
+<div class="hud"><span id="world">🌳 Świat 1: Zielona Łąka</span><span id="score">🪙 0 pkt</span><span id="lives">❤️ 3 życia</span></div>
+<p class="help">← → / A D — ruch · SPACJA / ↑ / W — skok · P — pauza · Zbierz monety, odkryj sekrety i dojdź do flagi!</p>
+<div id="message" aria-live="polite"></div>
+<script>
+(()=>{
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const overlay=document.getElementById('overlay'), play=document.getElementById('play'), cont=document.getElementById('continue'), resetSave=document.getElementById('resetSave');
+const scoreEl=document.getElementById('score'),livesEl=document.getElementById('lives'),worldEl=document.getElementById('world'),message=document.getElementById('message');
+const W=960,H=540,T=32,keys={};
+const worlds=[
+ {name:'Zielona Łąka',sky:'#78cfff',far:'#62b86a',ground:'#9a5a35',grass:'#42bd45',length:3200},
+ {name:'Wielki Las',sky:'#83c7ef',far:'#328d60',ground:'#765037',grass:'#38a94a',length:3600},
+ {name:'Betonowa Fabryka',sky:'#a7bfd0',far:'#788b9c',ground:'#747d87',grass:'#a3b2bc',length:3900},
+ {name:'Gorące Skały',sky:'#ffb16e',far:'#c65a45',ground:'#674a48',grass:'#d27c43',length:4200}
+];
+let save={world:0,score:0,lives:3,unlocked:0};
+try{const s=JSON.parse(localStorage.getItem('kapiSave')||'null');if(s&&Number.isInteger(s.world))save={...save,...s}}catch(e){}
+let world=0,score=0,lives=3,camera=0,active=false,paused=false,won=false,levelEnd=0,frame=0;
+let player, platforms, coins, turtles, particles, goal, secrets;
+let audioCtx=null, soundOn=true, musicTimer=null, musicStep=0;
+function audio(){if(!soundOn)return null;try{if(!audioCtx)audioCtx=new (window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume();return audioCtx}catch(e){return null}}
+function tone(freq,dur=.09,type='square',vol=.035,delay=0){const a=audio();if(!a)return;const o=a.createOscillator(),g=a.createGain();o.type=type;o.frequency.value=freq;g.gain.setValueAtTime(vol,a.currentTime+delay);g.gain.exponentialRampToValueAtTime(.001,a.currentTime+delay+dur);o.connect(g);g.connect(a.destination);o.start(a.currentTime+delay);o.stop(a.currentTime+delay+dur)}
+function sfx(name){if(name==='coin'){tone(880,.07,'square',.04);tone(1320,.1,'square',.025,.06)}else if(name==='jump')tone(300,.12,'square',.025);else if(name==='hurt')tone(150,.22,'sawtooth',.03);else if(name==='secret'){tone(660,.08);tone(880,.08,'square',.03,.08);tone(1100,.14,'square',.03,.16)}else if(name==='stomp')tone(220,.1,'triangle',.04);else if(name==='win'){[523,659,784,1046].forEach((f,i)=>tone(f,.16,'square',.03,i*.13))}}
+function musicTick(){if(!active||paused||!soundOn)return;const notes=[392,494,587,494,330,392,494,392,294,370,440,370,330,392,494,587];tone(notes[musicStep%notes.length],.12,'triangle',.012);musicStep++}
+const down=k=>!!keys[k.toLowerCase()];
+function saveGame(){try{localStorage.setItem('kapiSave',JSON.stringify({world,score,lives,unlocked:save.unlocked}))}catch(e){}}
+function updateHUD(){scoreEl.textContent='🪙 '+score+' pkt';livesEl.textContent='❤️ '+lives+' '+(lives===1?'życie':'życia');worldEl.textContent=['🌳','🌲','🏭','🌋'][world]+' Świat '+(world+1)+': '+worlds[world].name}
+function makeLevel(){
+ const len=worlds[world].length;
+ platforms=[{x:0,y:468,w:620,h:100,ground:true},{x:700,y:468,w:420,h:100,ground:true},{x:1200,y:468,w:400,h:100,ground:true},{x:1680,y:468,w:430,h:100,ground:true},{x:2190,y:468,w:400,h:100,ground:true},{x:2670,y:468,w:len-2670,h:100,ground:true}];
+ const ledges=[[210,385,130],[410,325,110],[555,400,95],[770,370,130],[950,305,130],[1120,390,90],[1320,350,150],[1510,280,100],[1740,380,120],[1920,315,140],[2160,370,130],[2350,300,140],[2530,390,100],[2780,360,130],[2950,300,120],[len-190,370,100]];
+ ledges.forEach(p=>platforms.push({x:p[0],y:p[1],w:p[2],h:24}));
+ // Additional platforms vary by world and extend the route.
+ for(let x=3000;x<len-230;x+=230){platforms.push({x,y:360-((Math.floor(x/230)%3)*35),w:105,h:24})}
+ coins=[];const coinXs=[140,240,275,310,450,485,595,790,830,975,1010,1150,1345,1385,1540,1770,1810,1960,2000,2210,2250,2390,2430,2565,2810,2850,2980];
+ coinXs.forEach((x,i)=>coins.push({x,y:[360,340,300,275,350,275,355,330,330,255,255,350,310,310,240,340,340,275,275,330,330,260,260,350,320,320,260][i],got:false,spin:Math.random()*6,secret:false}));
+ for(let x=3070;x<len-120;x+=170)coins.push({x,y:320-(Math.floor(x/170)%3)*25,got:false,spin:Math.random()*6,secret:false});
+ // Secret cache: a shimmering, partly hidden group of bonus coins behind a hill.
+ secrets=[{x:Math.min(1450,len-400),y:245,w:80,h:120,found:false},{x:Math.min(2600,len-350),y:245,w:90,h:120,found:false}];
+ secrets.forEach((q,i)=>{for(let j=0;j<5;j++)coins.push({x:q.x+j*16,y:q.y+20+(j%2)*-15,got:false,spin:j,secret:true,secretIndex:i})});
+ turtles=[];for(let x=360;x<len-200;x+=Math.max(420,Math.floor(len/6)))turtles.push({x,y:436,v:1+(world*.12),alive:true,min:Math.max(20,x-90),max:Math.min(len-100,x+170),shell:false});
+ particles=[];goal={x:len-105,y:340};player={x:65,y:370,vx:0,vy:0,w:25,h:38,onGround:false,invuln:0};camera=0;
+}
+function rect(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.round(x-camera),Math.round(y),w,h)}
+function drawBackground(){
+ const w=worlds[world];ctx.fillStyle=w.sky;ctx.fillRect(0,0,W,H);
+ // pixel clouds
+ for(let i=0;i<7;i++){let x=((i*190-camera*.22)%(W+180)+W+180)%(W+180)-70;let y=55+(i%3)*45;ctx.fillStyle='#fff';ctx.fillRect(x,y,60,18);ctx.fillRect(x+15,y-12,30,16);ctx.fillRect(x+45,y+5,25,13)}
+ for(let i=0;i<9;i++){let x=((i*150-camera*.42)%(W+180)+W+180)%(W+180)-80;ctx.fillStyle=w.far;ctx.beginPath();ctx.moveTo(x,468);ctx.lineTo(x+70,300+(i%3)*28);ctx.lineTo(x+145,468);ctx.fill();
+ if(world===1){ctx.fillStyle='#236b48';ctx.fillRect(x+45,330,16,138);ctx.fillRect(x+25,345,55,15);ctx.fillRect(x+18,365,68,14)}
+ }
+}
+function drawPlatform(p){
+ const x=p.x-camera;if(x+p.w<0||x>W)return;
+ if(p.ground){ctx.fillStyle=worlds[world].ground;ctx.fillRect(x,p.y,p.w,p.h);ctx.fillStyle=worlds[world].grass;ctx.fillRect(x,p.y,p.w,12);
+ ctx.fillStyle='#6d402b';for(let xx=x+8;xx<x+p.w;xx+=48){ctx.fillRect(xx,p.y+28,17,7);ctx.fillRect(xx+20,p.y+58,11,6)}
+ }else{ctx.fillStyle=world===2?'#7d8992':worlds[world].ground;ctx.fillRect(x,p.y,p.w,p.h);ctx.fillStyle=worlds[world].grass;ctx.fillRect(x,p.y,p.w,7);ctx.fillStyle='#00000022';ctx.fillRect(x,p.y+p.h-5,p.w,5);ctx.fillStyle='#ffffff30';ctx.fillRect(x+5,p.y+9,Math.max(0,p.w-10),3);for(let xx=x+12;xx<x+p.w-8;xx+=32){ctx.fillStyle='#00000022';ctx.fillRect(xx,p.y+14,9,4)}}
+}
+function drawKapi(){
+ let x=player.x-camera,y=player.y;if(player.invuln>0&&Math.floor(frame/5)%2===0)return;
+ // shoes, trousers, torso, head, cap, moustache
+ ctx.fillStyle='#e64c3b';ctx.fillRect(x+2,y+31,10,7);ctx.fillRect(x+15,y+31,10,7);ctx.fillStyle='#fff';ctx.fillRect(x+7,y+34,5,3);ctx.fillRect(x+20,y+34,5,3);
+ ctx.fillStyle='#243e80';ctx.fillRect(x+5,y+20,17,12);ctx.fillRect(x+7,y+17,5,5);ctx.fillRect(x+17,y+17,5,5);
+ ctx.fillStyle='#f2b47e';ctx.fillRect(x+4,y+6,19,15);ctx.fillRect(x+1,y+10,4,7);
+ ctx.fillStyle='#2f8d48';ctx.fillRect(x+2,y+2,22,7);ctx.fillRect(x+6,y-3,15,6);ctx.fillRect(x+20,y+5,9,4);
+ ctx.fillStyle='#fff';ctx.fillRect(x+17,y+10,4,4);ctx.fillStyle='#17243a';ctx.fillRect(x+19,y+11,2,3);
+ ctx.fillStyle='#513329';ctx.fillRect(x+10,y+16,7,3);ctx.fillRect(x+17,y+15,4,3);
+}
+function drawCoin(c){if(c.got)return;if(c.secret&&!secrets[c.secretIndex].found)return;let x=c.x-camera;if(x<-20||x>W+20)return;let s=Math.abs(Math.sin(frame*.09+c.spin));let ww=Math.max(5,14*s);ctx.fillStyle='#bd751c';ctx.fillRect(x-ww/2+2,c.y-10,ww,22);ctx.fillStyle=c.secret?'#f7ee9b':'#ffd747';ctx.fillRect(x-ww/2,c.y-12,ww,22);if(ww>8){ctx.fillStyle='#fff9cf';ctx.fillRect(x-ww/2+3,c.y-8,3,5);ctx.fillStyle='#b77b20';ctx.fillRect(x-2,c.y-5,3,10)}}
+function drawTurtle(t){if(!t.alive)return;let x=t.x-camera,y=t.y;if(t.shell){ctx.fillStyle='#b77b32';ctx.fillRect(x+5,y+13,21,13);ctx.fillStyle='#e4ad42';ctx.fillRect(x+8,y+15,15,8);return}ctx.fillStyle='#26784b';ctx.fillRect(x+4,y+8,23,17);ctx.fillStyle='#4cae56';ctx.fillRect(x+8,y+3,17,12);ctx.fillStyle='#f3d4a4';ctx.fillRect(x+22,y+10,9,9);ctx.fillStyle='#17243a';ctx.fillRect(x+27,y+12,2,3);ctx.fillStyle='#b77b32';ctx.fillRect(x+6,y+14,18,12);ctx.fillStyle='#e4ad42';ctx.fillRect(x+9,y+16,12,7);ctx.fillStyle='#245c42';ctx.fillRect(x+6,y+24,7,5);ctx.fillRect(x+22,y+24,7,5)}
+function drawGoal(){let x=goal.x-camera;ctx.fillStyle='#ececec';ctx.fillRect(x,goal.y,6,128);ctx.fillStyle='#ee4c45';ctx.fillRect(x+6,goal.y+5,45,28);ctx.fillStyle='#fff';ctx.fillRect(x+6,goal.y+5,20,7)}
+function draw(){
+ drawBackground();platforms.forEach(drawPlatform);
+ // Pixel bushes and secret sparkle hints
+ for(let x=160;x<worlds[world].length;x+=370){let sx=x-camera;if(sx>-50&&sx<W+50){ctx.fillStyle='#238849';ctx.fillRect(sx,442,34,20);ctx.fillRect(sx+8,430,22,15);ctx.fillStyle='#55c95c';ctx.fillRect(sx+5,438,8,5)}}
+ secrets.forEach(q=>{if(!q.found){let sx=q.x-camera;if(sx>-40&&sx<W+40){ctx.fillStyle='#fff2a0';ctx.fillRect(sx+30,q.y-8,5,5);ctx.fillRect(sx+15,q.y+3,4,4)}}});coins.forEach(drawCoin);turtles.forEach(drawTurtle);drawGoal();drawKapi();
+ for(const p of particles){ctx.fillStyle=p.c;ctx.fillRect(p.x-camera,p.y,p.s,p.s)}
+ if(paused&&active){ctx.fillStyle='#14213d99';ctx.fillRect(0,0,W,H);ctx.fillStyle='#fff';ctx.font='bold 44px monospace';ctx.textAlign='center';ctx.fillText('PAUZA',W/2,H/2)}
+}
+function overlap(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y}
+function hurt(){if(player.invuln>0)return;lives--;player.invuln=100;player.vx=-4;player.vy=-7;sfx('hurt');updateHUD();if(lives<=0){active=false;saveGame();showOverlay('KONIEC GRY','Kapi stracił wszystkie życia. Wynik: '+score+' pkt.','ZAGRAJ PONOWNIE')}else message.textContent='Auć! Uważaj na żółwie!'}
+function showOverlay(title,desc,buttonText){overlay.innerHTML='<div class="menuCard"><h2>'+title+'</h2><p>'+desc+'</p><button id="overlayAction">'+buttonText+'</button><button id="overlayMenu">MENU</button></div>';overlay.style.display='flex';document.getElementById('overlayAction').onclick=()=>{overlay.style.display='none';start(true)};document.getElementById('overlayMenu').onclick=()=>{overlay.innerHTML='<div class="menuCard"><h2>KAPI</h2><p>Wskocz do przygody! Zbieraj złote monety, unikaj żółwi i odkrywaj kolejne światy.</p><button id="play">▶ GRAJ</button><button id="continue">▶ KONTYNUUJ</button><button id="resetSave">NOWA GRA</button><button id="soundToggle">🔊 DŹWIĘK: ON</button><p style="font-size:.85rem">← → / A D — ruch • SPACJA — skok</p></div>';wireMenu();overlay.style.display='flex';active=false}}
+function wireMenu(){const st=document.getElementById('soundToggle');if(st){st.textContent=soundOn?'🔊 DŹWIĘK: ON':'🔇 DŹWIĘK: OFF';st.onclick=()=>{soundOn=!soundOn;st.textContent=soundOn?'🔊 DŹWIĘK: ON':'🔇 DŹWIĘK: OFF';if(soundOn)audio()}}document.getElementById('play').onclick=()=>{world=0;score=0;lives=3;save.unlocked=0;start(false)};document.getElementById('continue').onclick=()=>{world=save.world||0;score=save.score||0;lives=save.lives||3;start(false)};document.getElementById('resetSave').onclick=()=>{world=0;score=0;lives=3;save.unlocked=0;saveGame();start(false)}}
+function start(restartLevel){if(!restartLevel&&save.unlocked>0&&world===0&&score===0){/* new game */}makeLevel();active=true;paused=false;won=false;message.textContent='Powodzenia, Kapi!';updateHUD();overlay.style.display='none';}
+function nextWorld(){if(world<worlds.length-1){world++;save.unlocked=Math.max(save.unlocked,world);save.world=world;save.score=score;save.lives=lives;saveGame();makeLevel();message.textContent='Świetnie! Odblokowano: '+worlds[world].name;updateHUD()}else{active=false;saveGame();showOverlay('GRATULACJE!','Ukończyłeś wszystkie światy! Wynik: '+score+' pkt.','ZAGRAJ JESZCZE RAZ')}}
+function update(){
+ if(!active||paused)return;frame++;
+ const accel=.62,max=4.2;
+ if(down('arrowleft')||down('a'))player.vx=Math.max(player.vx-accel,-max);else if(down('arrowright')||down('d'))player.vx=Math.min(player.vx+accel,max);else player.vx*=.78;
+ if((down(' ')||down('arrowup')||down('w'))&&player.onGround){player.vy=-11.5;player.onGround=false;sfx('jump')}
+ player.vy=Math.min(player.vy+.52,13);player.x+=player.vx;player.y+=player.vy;player.onGround=false;
+ for(const p of platforms){if(overlap(player,p)&&player.vy>=0&&player.y+player.h-player.vy<=p.y+5){player.y=p.y-player.h;player.vy=0;player.onGround=true}}
+ player.x=Math.max(0,player.x);
+ if(player.y>H+70){hurt();if(lives>0){player.x=Math.max(50,player.x-100);player.y=300;player.vy=0}}
+ if(player.invuln>0)player.invuln--;
+ for(const c of coins){if(!c.got&&overlap(player,{x:c.x-9,y:c.y-12,w:18,h:24})){c.got=true;score+=10;sfx('coin');particles.push({x:c.x,y:c.y,s:5,c:'#ffdb4b',vx:0,vy:-2,life:20});message.textContent='+10 punktów!';updateHUD()}}
+ for(const t of turtles){if(!t.alive)continue;t.x+=t.v;if(t.x<t.min||t.x>t.max)t.v*=-1;if(overlap(player,{x:t.x+4,y:t.y+4,w:27,h:25})){if(player.vy>1&&player.y+player.h-player.vy<t.y+19){t.alive=false;t.shell=true;player.vy=-8;sfx('stomp');message.textContent='Żółw schował się w skorupie!'}else hurt()}}
+ particles=particles.filter(p=>p.life-->0);particles.forEach(p=>p.y+=p.vy);
+ camera=Math.max(0,Math.min(player.x-W*.35,worlds[world].length-W));
+ secrets.forEach((q,idx)=>{if(!q.found&&overlap(player,{x:q.x-12,y:q.y-12,w:q.w+24,h:q.h+24})){q.found=true;sfx('secret');message.textContent='✨ SEKRET ODKRYTY! Zbieraj bonusowe monety!';}});
+ if(player.x>goal.x-10){sfx('win');nextWorld()}
+}
+function loop(){update();if(active&&!paused&&soundOn&&frame%26===0)musicTick();draw();requestAnimationFrame(loop)}
+window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if([' ','arrowleft','arrowright','arrowup'].includes(k))e.preventDefault();keys[k]=true;if(k==='p'&&active)paused=!paused;if(k==='escape'&&active)paused=!paused});
+window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+play.onclick=()=>{world=0;score=0;lives=3;start(false)};cont.onclick=()=>{world=save.world||0;score=save.score||0;lives=save.lives||3;start(false)};resetSave.onclick=()=>{world=0;score=0;lives=3;save.unlocked=0;saveGame();start(false)};const soundToggle=document.getElementById('soundToggle');if(soundToggle){soundToggle.onclick=()=>{soundOn=!soundOn;soundToggle.textContent=soundOn?'🔊 DŹWIĘK: ON':'🔇 DŹWIĘK: OFF';if(soundOn)audio()}}
+if(save.unlocked>0||save.score>0){cont.hidden=false}
+makeLevel();updateHUD();loop();
+})();
+</script></body></html>
